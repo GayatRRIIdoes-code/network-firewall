@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import ipaddress
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List
+
+
+@dataclass
+class FirewallRule:
+    name: str
+    action: str
+    protocol: str = "ANY"
+    src_ip: str = "any"
+    dst_ip: str = "any"
+    src_port: int | None = None
+    dst_port: int | None = None
+    vpn_only: bool = False
+    enabled: bool = True
+    description: str | None = None
+    icmp_rate_limit: int | None = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FirewallRule":
+        return cls(
+            name=data.get("name", "unnamed_rule"),
+            action=str(data.get("action", "DENY")).upper(),
+            protocol=str(data.get("protocol", "ANY")).upper(),
+            src_ip=data.get("src_ip", "any"),
+            dst_ip=data.get("dst_ip", "any"),
+            src_port=data.get("src_port"),
+            dst_port=data.get("dst_port"),
+            vpn_only=bool(data.get("vpn_only", False)),
+            enabled=bool(data.get("enabled", True)),
+            description=data.get("description"),
+            icmp_rate_limit=data.get("icmp_rate_limit"),
+        )
+
+    def matches(self, packet: Dict[str, Any]) -> bool:
+        if not self.enabled:
+            return False
+
+        if self.protocol != "ANY" and packet.get("protocol", "UNKNOWN").upper() != self.protocol:
+            return False
+
+        if self.vpn_only and not packet.get("vpn", False):
+            return False
+
+        if not self._ip_matches(self.src_ip, packet.get("src_ip")):
+            return False
+
+        if not self._ip_matches(self.dst_ip, packet.get("dst_ip")):
+            return False
+
+        if self.src_port is not None and packet.get("src_port") != self.src_port:
+            return False
+
+        if self.dst_port is not None and packet.get("dst_port") != self.dst_port:
+            return False
+
+        return True
+
+    @staticmethod
+    def _ip_matches(rule_value: Any, packet_value: Any) -> bool:
+        if rule_value in (None, "any", "ANY", "*", ""):
+            return True
+
+        if packet_value is None:
+            return False
+
+        if isinstance(rule_value, list):
+            return any(FirewallRule._ip_matches(value, packet_value) for value in rule_value)
+
+        rule_value = str(rule_value)
+        if rule_value.startswith("!"):
+            return not FirewallRule._ip_matches(rule_value[1:], packet_value)
+
+        try:
+            if "/" in rule_value:
+                return ipaddress.ip_address(packet_value) in ipaddress.ip_network(rule_value, strict=False)
+            return ipaddress.ip_address(packet_value) == ipaddress.ip_address(rule_value)
+        except ValueError:
+            return False
+
+
+def load_rules(path: str | Path) -> List[FirewallRule]:
+    """Load firewall rules from JSON config."""
+    config_file = Path(path)
+    if not config_file.exists():
+        raise FileNotFoundError(f"Rules file not found: {config_file}")
+
+    try:
+        with config_file.open("r", encoding="utf-8") as handle:
+            config = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in firewall rules file: {config_file}") from exc
+
+    rules_data = config.get("rules", [])
+    return [FirewallRule.from_dict(rule) for rule in rules_data]

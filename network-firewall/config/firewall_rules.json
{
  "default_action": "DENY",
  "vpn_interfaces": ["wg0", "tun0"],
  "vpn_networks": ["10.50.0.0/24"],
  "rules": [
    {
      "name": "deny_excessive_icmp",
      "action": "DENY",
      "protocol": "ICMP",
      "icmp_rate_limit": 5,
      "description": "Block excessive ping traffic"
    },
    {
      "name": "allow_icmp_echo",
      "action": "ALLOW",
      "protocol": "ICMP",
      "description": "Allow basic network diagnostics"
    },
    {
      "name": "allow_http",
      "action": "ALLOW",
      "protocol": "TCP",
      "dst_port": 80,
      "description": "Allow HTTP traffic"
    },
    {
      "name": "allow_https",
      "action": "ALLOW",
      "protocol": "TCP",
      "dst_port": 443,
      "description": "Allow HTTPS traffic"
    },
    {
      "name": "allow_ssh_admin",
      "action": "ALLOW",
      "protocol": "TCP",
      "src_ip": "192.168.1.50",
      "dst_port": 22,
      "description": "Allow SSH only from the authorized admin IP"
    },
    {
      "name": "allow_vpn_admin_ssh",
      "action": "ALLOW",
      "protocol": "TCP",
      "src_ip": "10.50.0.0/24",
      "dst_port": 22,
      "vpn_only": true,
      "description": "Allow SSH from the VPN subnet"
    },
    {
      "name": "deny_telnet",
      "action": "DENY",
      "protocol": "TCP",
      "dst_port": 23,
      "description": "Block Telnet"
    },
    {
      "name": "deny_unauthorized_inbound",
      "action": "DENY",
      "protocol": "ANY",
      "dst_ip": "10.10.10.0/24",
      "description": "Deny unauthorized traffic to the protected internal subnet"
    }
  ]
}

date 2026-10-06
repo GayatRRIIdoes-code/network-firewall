@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+import time
+from collections import defaultdict, deque
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
+from scapy.all import ICMP, IP, TCP, UDP, sniff
+
+from .logger import configure_logger
+from .rules import FirewallRule, load_rules
+from .vpn import VPNManager
+
+
+class FirewallEngine:
+    """Rule-based firewall engine with packet logging and VPN awareness."""
+
+    def __init__(self, rules_path: str = "config/firewall_rules.json", vpn_config_path: str = "config/wg0.conf"):
+        self.rules = load_rules(rules_path)
+        self.default_action = "DENY"
+        self.logger = configure_logger()
+        self.vpn_manager = VPNManager(vpn_config_path)
+        self._icmp_history = defaultdict(deque)
+
+    def _normalize_packet(self, packet: Any, interface: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        if isinstance(packet, dict):
+            normalized = dict(packet)
+            normalized.setdefault("protocol", normalized.get("protocol", "UNKNOWN").upper())
+            normalized.setdefault("src_ip", normalized.get("src_ip", "0.0.0.0"))
+            normalized.setdefault("dst_ip", normalized.get("dst_ip", "0.0.0.0"))
+            normalized.setdefault("interface", interface)
+            normalized["vpn"] = self.vpn_manager.is_vpn_packet(normalized, normalized.get("interface"))
+            return normalized
+
+        if not hasattr(packet, "haslayer"):
+            return None
+
+        ip_layer = packet.getlayer(IP)
+        if ip_layer is None:
+            return None
+
+        protocol = "UNKNOWN"
+        src_port = None
+        dst_port = None
+
+        if packet.haslayer(TCP):
+            protocol = "TCP"
+            src_port = int(packet[TCP].sport)
+            dst_port = int(packet[TCP].dport)
+        elif packet.haslayer(UDP):
+            protocol = "UDP"
+            src_port = int(packet[UDP].sport)
+            dst_port = int(packet[UDP].dport)
+        elif packet.haslayer(ICMP):
+            protocol = "ICMP"
+
+        normalized = {
+            "src_ip": ip_layer.src,
+            "dst_ip": ip_layer.dst,
+            "protocol": protocol,
+            "src_port": src_port,
+            "dst_port": dst_port,
+            "interface": interface or getattr(packet, "iface", None),
+        }
+        normalized["vpn"] = self.vpn_manager.is_vpn_packet(normalized, normalized.get("interface"))
+        return normalized
+
+    def _rule_matches(self, rule: FirewallRule, packet: Dict[str, Any]) -> bool:
+        if rule.icmp_rate_limit is not None:
+            if packet.get("protocol") != "ICMP":
+                return False
+
+            limit = int(rule.icmp_rate_limit)
+            threshold_seconds = 10
+            history = self._icmp_history[packet["src_ip"]]
+            current_time = time.time()
+
+            while history and current_time - history[0] > threshold_seconds:
+                history.popleft()
+
+            history.append(current_time)
+
+            return len(history) > limit
+
+        return rule.matches(packet)
+
+    def inspect_packet(self, packet: Any, interface: Optional[str] = None) -> Dict[str, Any]:
+        normalized = self._normalize_packet(packet, interface)
+        if normalized is None:
+            return {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "src_ip": "unknown",
+                "dst_ip": "unknown",
+                "protocol": "UNKNOWN",
+                "src_port": None,
+                "dst_port": None,
+                "decision": self.default_action,
+                "rule": "DEFAULT",
+                "interface": interface,
+            }
+
+        decision = self.default_action
+        matched_rule_name = "DEFAULT"
+
+        for rule in self.rules:
+            if self._rule_matches(rule, normalized):
+                decision = rule.action.upper()
+                matched_rule_name = rule.name
+                break
+
+        if matched_rule_name == "DEFAULT":
+            decision = self.default_action
+
+        result = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "src_ip": normalized["src_ip"],
+            "dst_ip": normalized["dst_ip"],
+            "protocol": normalized["protocol"],
+            "src_port": normalized.get("src_port"),
+            "dst_port": normalized.get("dst_port"),
+            "decision": decision,
+            "rule": matched_rule_name,
+            "interface": normalized.get("interface"),
+        }
+
+        self.logger.info(
+            "timestamp=%s src_ip=%s dst_ip=%s protocol=%s src_port=%s dst_port=%s decision=%s rule=%s interface=%s",
+            result["timestamp"],
+            result["src_ip"],
+            result["dst_ip"],
+            result["protocol"],
+            result["src_port"],
+            result["dst_port"],
+            result["decision"],
+            result["rule"],
+            result["interface"],
+        )
+
+        return result
+
+    def sniff_packets(self, interface: str = "eth0", count: int = 0, timeout: Optional[float] = None) -> None:
+        """Capture live traffic from a network interface."""
+        sniff(
+            iface=interface,
+            prn=lambda packet: self.inspect_packet(packet, interface=interface),
+            store=False,
+            count=count,
+            timeout=timeout,
+        )
+
+
+if __name__ == "__main__":
+    engine = FirewallEngine()
+    engine.sniff_packets(interface="eth0", timeout=30)

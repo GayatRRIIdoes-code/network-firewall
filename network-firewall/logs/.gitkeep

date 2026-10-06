@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+from scapy.all import ICMP, IP, TCP, UDP
+
+from firewall.engine import FirewallEngine
+
+
+def _build_packet(src_ip: str, dst_ip: str, protocol: str, src_port: int, dst_port: int):
+    if protocol == "TCP":
+        return IP(src=src_ip, dst=dst_ip) / TCP(sport=src_port, dport=dst_port)
+    if protocol == "UDP":
+        return IP(src=src_ip, dst=dst_ip) / UDP(sport=src_port, dport=dst_port)
+    if protocol == "ICMP":
+        return IP(src=src_ip, dst=dst_ip) / ICMP(type=8, id=1)
+    raise ValueError(f"Unsupported protocol: {protocol}")
+
+
+def test_allowed_http_traffic():
+    engine = FirewallEngine("config/firewall_rules.json", "config/wg0.conf")
+    packet = _build_packet("192.168.1.10", "8.8.8.8", "TCP", 50000, 80)
+    decision = engine.inspect_packet(packet, interface="eth0")
+    assert decision["decision"] == "ALLOW"
+    assert decision["rule"] == "allow_http"
+
+
+def test_allowed_https_traffic():
+    engine = FirewallEngine("config/firewall_rules.json", "config/wg0.conf")
+    packet = _build_packet("192.168.1.10", "8.8.8.8", "TCP", 50001, 443)
+    decision = engine.inspect_packet(packet, interface="eth0")
+    assert decision["decision"] == "ALLOW"
+    assert decision["rule"] == "allow_https"
+
+
+def test_allowed_ssh_from_admin():
+    engine = FirewallEngine("config/firewall_rules.json", "config/wg0.conf")
+    packet = _build_packet("192.168.1.50", "10.10.10.5", "TCP", 60000, 22)
+    decision = engine.inspect_packet(packet, interface="eth0")
+    assert decision["decision"] == "ALLOW"
+    assert decision["rule"] == "allow_ssh_admin"
+
+
+def test_unauthorized_ssh_denied():
+    engine = FirewallEngine("config/firewall_rules.json", "config/wg0.conf")
+    packet = _build_packet("203.0.113.9", "10.10.10.5", "TCP", 60000, 22)
+    decision = engine.inspect_packet(packet, interface="eth0")
+    assert decision["decision"] == "DENY"
+
+
+def test_telnet_blocked():
+    engine = FirewallEngine("config/firewall_rules.json", "config/wg0.conf")
+    packet = _build_packet("203.0.113.9", "10.10.10.8", "TCP", 40000, 23)
+    decision = engine.inspect_packet(packet, interface="eth0")
+    assert decision["decision"] == "DENY"
+    assert decision["rule"] == "deny_telnet"
+
+
+def test_icmp_rate_limit_blocks_excessive_ping():
+    engine = FirewallEngine("config/firewall_rules.json", "config/wg0.conf")
+    for index in range(6):
+        packet = _build_packet("198.51.100.10", "10.10.10.5", "ICMP", 0, 0)
+        decision = engine.inspect_packet(packet, interface="eth0")
+    assert decision["decision"] == "DENY"
+    assert decision["rule"] == "deny_excessive_icmp"
+
+
+def test_default_deny_for_unknown_traffic():
+    engine = FirewallEngine("config/firewall_rules.json", "config/wg0.conf")
+    packet = _build_packet("198.51.100.100", "10.10.10.20", "TCP", 50000, 8080)
+    decision = engine.inspect_packet(packet, interface="eth0")
+    assert decision["decision"] == "DENY"
+    assert decision["rule"] == "DEFAULT"
+
+
+def test_vpn_traffic_protected_by_firewall():
+    engine = FirewallEngine("config/firewall_rules.json", "config/wg0.conf")
+    packet = _build_packet("10.50.0.2", "10.50.0.5", "TCP", 56789, 22)
+    decision = engine.inspect_packet(packet, interface="wg0")
+    assert decision["decision"] == "ALLOW"
+    assert decision["rule"] == "allow_vpn_admin_ssh"
