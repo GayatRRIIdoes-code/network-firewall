@@ -1,4 +1,4 @@
-"""Main firewall demonstration with Scapy packet inspection."""
+"""Main firewall demonstration with enhanced logging."""
 
 import argparse
 import sys
@@ -8,16 +8,20 @@ from firewall.test_mode import TestMode, TestPacket
 
 
 def demo_test_mode():
-    """Run firewall in test mode with synthetic packets."""
-    print("\n" + "*" * 90)
+    """Run firewall in test mode with synthetic packets and detailed logging."""
+    print("\n" + "*" * 100)
     print("FIREWALL ENGINE - TEST MODE (No Root Required)")
-    print("*" * 90)
+    print("*" * 100)
 
-    # Initialize test mode
-    test_mode = TestMode("config/firewall_rules.json")
+    # Initialize firewall engine with logging
+    engine = FirewallEngine(
+        rules_file="config/firewall_rules.json",
+        log_dir="logs",
+        log_file="firewall.log",
+    )
 
     print("\nLoaded Rules:")
-    for rule in test_mode.engine.get_rules():
+    for rule in engine.get_rules():
         print(
             f"  - {rule.name}: {rule.action} | Protocol: {rule.protocol} | "
             f"Port: {rule.dst_port or 'N/A'} | Description: {rule.description}"
@@ -73,26 +77,47 @@ def demo_test_mode():
         },
     ]
 
-    print("\n" + "*" * 90)
-    print("PROCESSING TEST PACKETS")
-    print("*" * 90)
+    print("\n" + "*" * 100)
+    print("PROCESSING TEST PACKETS WITH DETAILED LOGGING")
+    print("*" * 100)
 
-    # Process all packets
-    test_mode.process_packets(test_packets)
+    # Process all packets through the engine
+    test_mode = TestMode("config/firewall_rules.json")
+    for test in test_packets:
+        packet = test["packet"]
+        
+        # Extract packet info
+        from firewall.packet import PacketProcessor
+        processor = PacketProcessor()
+        packet_info = processor.process_packet(packet)
+        
+        if packet_info:
+            # Filter through engine (this logs the packet)
+            decision, rule, log_msg = engine.filter_packet(packet_info)
 
-    # Display results
-    test_mode.print_results()
+    # Display statistics
+    stats = engine.get_statistics()
+    print("\n" + "*" * 100)
+    print("FIREWALL STATISTICS")
+    print("*" * 100)
+    print(f"Total Packets Processed: {stats['total_packets']}")
+    print(f"Allowed: {stats['allowed_packets']}")
+    print(f"Denied: {stats['denied_packets']}")
+    print(f"Allow Rate: {stats['allowed_packets'] / max(stats['total_packets'], 1) * 100:.1f}%")
+    print(f"Deny Rate: {stats['denied_packets'] / max(stats['total_packets'], 1) * 100:.1f}%")
+    print("*" * 100)
 
-    print("Test mode complete. Check logs/firewall.log for detailed logs.")
+    print("\nDetailed logs written to: logs/firewall.log")
+    print("Test mode complete.\n")
 
 
 def demo_live_capture(interface, timeout, packet_filter):
     """Run firewall in live capture mode (requires root)."""
-    print("\n" + "*" * 90)
-    print(f"FIREWALL ENGINE - LIVE PACKET CAPTURE")
+    print("\n" + "*" * 100)
+    print(f"FIREWALL ENGINE - LIVE PACKET CAPTURE WITH DETAILED LOGGING")
     print(f"Interface: {interface}")
     print(f"Timeout: {timeout}s" if timeout else "Timeout: None (continuous)")
-    print("*" * 90)
+    print("*" * 100)
 
     print("\n[!] This requires root privileges. Run with: sudo python3 main.py --live")
     print("    Press Ctrl+C to stop.\n")
@@ -102,9 +127,15 @@ def demo_live_capture(interface, timeout, packet_filter):
             interface=interface, rules_file="config/firewall_rules.json"
         )
         capture.start_capture(timeout=timeout, packet_filter=packet_filter)
-        print(
-            f"\nCapture complete. Processed {capture.get_packet_count()} packets."
-        )
+        
+        # Display statistics
+        stats = capture.engine.get_statistics()
+        print(f"\nCapture complete. Processed {capture.get_packet_count()} packets.")
+        if capture.get_packet_count() > 0:
+            print(f"Allowed: {stats['allowed_packets']}")
+            print(f"Denied: {stats['denied_packets']}")
+        print("\nDetailed logs written to: logs/firewall.log")
+        
     except PermissionError:
         print("\n[ERROR] Root privileges required. Run with: sudo python3 main.py --live")
         sys.exit(1)
@@ -113,7 +144,7 @@ def demo_live_capture(interface, timeout, packet_filter):
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Network Firewall with Scapy packet inspection"
+        description="Network Firewall with Scapy packet inspection and detailed logging"
     )
     parser.add_argument(
         "--live",
