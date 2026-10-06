@@ -1,0 +1,46 @@
+{
+  "default_action": "DENY",
+  "rules": [
+    {
+      "name": "allow_http",
+      "action": "ALLOW",
+      "protocol": "TCP",
+      "dst_port": 80,
+      "description": "Allow HTTP traffic on port 80"
+    },
+    {
+      "name": "allow_https",
+      "action": "ALLOW",
+      "protocol": "TCP",
+      "dst_port": 443,
+      "description": "Allow HTTPS traffic on port 443"
+    },
+    {
+      "name": "allow_ssh_admin",
+      "action": "ALLOW",
+      "protocol": "TCP",
+      "src_ip": "192.168.1.50",
+      "dst_port": 22,
+      "description": "Allow SSH only from authorized admin IP"
+    },
+    {
+      "name": "deny_telnet",
+      "action": "DENY",
+      "protocol": "TCP",
+      "dst_port": 23,
+      "description": "Deny Telnet traffic on port 23"
+    },
+    {
+      "name": "allow_icmp",
+      "action": "ALLOW",
+      "protocol": "ICMP",
+      "description": "Allow ICMP for diagnostics (future: rate limiting)"
+    },
+    {
+      "name": "deny_unauthorized_inbound",
+      "action": "DENY",
+      "protocol": "ANY",
+      "description": "Deny unmatched inbound traffic by default"
+    }
+  ]
+}
